@@ -1442,6 +1442,7 @@ runs:
         fi
         cat >> "$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig" <<EOF
         CONFIG_KSU=y
+        CONFIG_KALLSYMS_ALL=y
         EOF
 
         # 将 FinaSU 官方管理器签名证书注入内核第二信任槽（EXPECTED_SIZE2/HASH2）。
