@@ -977,8 +977,12 @@ jobs:
           
           echo "New tag: $NEW_TAG"
           echo "NEW_TAG=${NEW_TAG}" >> $GITHUB_ENV
-          git tag $NEW_TAG
-          git push origin $NEW_TAG
+          # 附注标签：release 的 created_at 会继承 tagger 日期，从而按每次发布自身的完成时间排序。
+          # 轻量标签会用目标提交的日期，多个变体指向同一提交时 created_at 相同，列表顺序会变成随机。
+          git -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              tag -a "$NEW_TAG" -m "OnePlus kernel $NEW_TAG"
+          git push origin "$NEW_TAG"
 
       - name: 📥 Download Artifacts
         uses: actions/download-artifact@v8
