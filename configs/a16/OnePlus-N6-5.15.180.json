@@ -2,7 +2,7 @@
   "model": "OP-N6-5.15.180",
   "soc": "dimensity6100plus",
   "branch": "wild/mt6835",
-  "manifest": "oneplus_n6_w.xml",
+  "manifest": "oneplus_n6_5.15.180_w.xml",
   "android_version": "android13",
   "kernel_version": "5.15",
   "os_version": "A16",
