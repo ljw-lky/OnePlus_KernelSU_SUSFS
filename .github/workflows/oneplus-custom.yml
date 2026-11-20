@@ -127,6 +127,7 @@ on:
           - "OnePlus-Nord4-CE-5.15.180 (A16)"
           - "OnePlus-Nord5-6.1.118 (A16)"
           - "OnePlus-Nord5-6.1.141 (A16)"
+          - "OnePlus-Nord5-6.1.157 (A16)"
           - "OnePlus-Nord6-6.6.89 (A16)"
           - "OnePlus-Nord-CE5-6.1.134 (A16)"
           - "OnePlus-Nord-CE5-6.1.157 (A16)"
@@ -157,6 +158,7 @@ on:
           - "OnePlus-10Pro-5.10.236 (A16)"
           - "OnePlus-11-5.15.167 (A16)"
           - "OnePlus-11-5.15.180 (A16)"
+          - "OnePlus-11-5.15.197 (A16)"
           - "OnePlus-11R-5.10.236 (A16)"
           - "OnePlus-12-6.1.118 (A16)"
           - "OnePlus-12-6.1.141 (A16)"
@@ -171,7 +173,9 @@ on:
           - "OnePlus-13T-6.6.89 (A16)"
           - "OnePlus-13R-6.1.118 (A16)"
           - "OnePlus-13R-6.1.141 (A16)"
+          - "OnePlus-13R-6.1.157 (A16)"
           - "OnePlus-15-6.12.23 (A16)"
+          - "OnePlus-15-6.12.58 (A16)"
           - "OnePlus-15T-6.12.38 (A16)"
           - "OnePlus-15R-6.12.38 (A16)"
       ksu_variant:
@@ -179,12 +183,12 @@ on:
         required: true
         type: choice
         options:
-          - SukiSU
+          - SukiSU-Nova
           - BakaSU
           - FinaSU
         default: FinaSU
       build_channel:
-        description: '构建通道（正式=官方 Release 发行版，最新=上游最新提交）'
+        description: '构建管理器通道'
         required: false
         type: choice
         options:
@@ -192,7 +196,7 @@ on:
           - "最新 (HEAD)"
         default: "正式 (Release)"
       custom_version:
-        description: '自定义版本名（可选）'
+        description: '自定义内核版本名'
         required: false
         type: string
         default: ''
@@ -202,12 +206,17 @@ on:
         type: string
         default: ''
       use_rekernel:
-        description: '启用 Re-Kernel 驱动（默认关闭）'
+        description: '启用 Re-Kernel 驱动'
+        required: false
+        type: boolean
+        default: false
+      use_nomount:
+        description: '启用 NoMount 挂载元模块（需单独刷入配套模块）'
         required: false
         type: boolean
         default: false
       enable_droidspaces_ntsync:
-        description: '启用 Droidspaces 容器 & NTSync（默认关闭）'
+        description: '启用 Droidspaces 容器 & NTSync'
         required: false
         type: boolean
         default: false
@@ -219,6 +228,11 @@ on:
           - O2
           - O3
         default: O2
+      mlgo:
+        description: '启用 ML 编译器优化（regalloc advisor；工具链不支持时自动跳过）'
+        required: false
+        type: boolean
+        default: true
       mirror_toolchains:
         description: '构建前同步工具链（自动检查并补齐缺失缓存，已有缓存时秒级跳过）'
         required: false
@@ -227,7 +241,7 @@ on:
 
 jobs:
   set-matrix:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
       model: ${{ steps.set-matrix.outputs.model }}
@@ -364,26 +378,30 @@ jobs:
 
           device=$(jq -c '.' "$config_file")
 
-          # Droidspaces & NTSync 合并开关：默认关闭，不勾选时强制关闭两者
+          # Droidspaces & NTSync 合并开关（复选框，默认不勾选）。
+          # 注意：这里覆写的是容器命名空间组（USER_NS/PID_NS/MACVLAN）与
+          # NTSYNC —— 开机必需的 DEVTMPFS / SYSVIPC / POSIX_MQUEUE / IPC_NS
+          # 在 action 里已改为无条件写入，不再受本开关影响。因此不勾选也能
+          # 正常开机，只是没有容器和 NTSync。
           dn=false
           [ "${{ inputs.enable_droidspaces_ntsync }}" = "true" ] && dn=true
           device=$(echo "$device" | jq -c --argjson dn "$dn" '.ds = $dn | .ntsync = $dn')
           echo "Droidspaces/NTSync override: $dn"
 
-          # KernelSU 变体（固定默认分支：SukiSU→builtin, BakaSU→main, FinaSU→master）
+          # KernelSU 变体（固定默认分支：SukiSU-Nova→builtin, BakaSU→main, FinaSU→master）
           ksu_variant='${{ inputs.ksu_variant }}'
           case "$ksu_variant" in
-            SukiSU)
+            SukiSU-Nova)
               ksu_hash="builtin"
-              KSU_REPO="SukiSU-Ultra/SukiSU-Ultra"
+              KSU_REPO_URL="https://git.zako.shirkneko.top:20004/shirkneko/SukiSU.git"
               ;;
             BakaSU)
               ksu_hash="main"
-              KSU_REPO="Baka-SU/BakaSU"
+              KSU_REPO_URL="https://github.com/Baka-SU/BakaSU.git"
               ;;
             FinaSU)
               ksu_hash="master"
-              KSU_REPO="LyraVoid/FinaSU"
+              KSU_REPO_URL="https://github.com/LyraVoid/FinaSU.git"
               ;;
             *)
               echo "::error::Unsupported KernelSU variant: $ksu_variant"
@@ -393,12 +411,12 @@ jobs:
 
           # 校验 ref 存在（40 位 commit 直接放行）
           if [[ ! "$ksu_hash" =~ ^[0-9a-f]{40}$ ]]; then
-            if ! git ls-remote "https://github.com/${KSU_REPO}.git" "refs/heads/$ksu_hash" "refs/tags/$ksu_hash" | grep -q .; then
-              echo "::error::Ref '$ksu_hash' does not exist in $KSU_REPO"
+            if ! git ls-remote "$KSU_REPO_URL" "refs/heads/$ksu_hash" "refs/tags/$ksu_hash" | grep -q .; then
+              echo "::error::Ref '$ksu_hash' does not exist in $KSU_REPO_URL"
               exit 1
             fi
           fi
-          echo "KSU: $ksu_variant @ $ksu_hash ($KSU_REPO)"
+          echo "KSU: $ksu_variant @ $ksu_hash ($KSU_REPO_URL)"
 
           matrix=$(jq -nc --argjson dev "$device" --arg type "$ksu_variant" --arg hash "$ksu_hash" \
             '[ $dev + {ksu_type: $type, ksu_hash: $hash, ksu_resolved_hash: $hash} ]')
@@ -417,9 +435,14 @@ jobs:
             echo "| Setting | Value |"
             echo "|---------|-------|"
             echo "| Device | \`${{ steps.set-matrix.outputs.model_display }}\` |"
-            echo "| KernelSU | \`${{ inputs.ksu_variant }}\` @ \`${{ inputs.ksu_variant == 'SukiSU' && 'builtin' || (inputs.ksu_variant == 'FinaSU' && 'master' || 'main') }}\` |"
+            echo "| KernelSU | \`${{ inputs.ksu_variant }}\` @ \`${{ inputs.ksu_variant == 'SukiSU-Nova' && 'builtin' || (inputs.ksu_variant == 'FinaSU' && 'master' || 'main') }}\` |"
+            if [ "${{ inputs.ksu_variant }}" = "FinaSU" ]; then
+              echo "| FinaSU Hook | \`SUSFS Inline\` |"
+            fi
             echo "| Re-Kernel | ${{ inputs.use_rekernel && '✅ enabled' || '❌ disabled' }} |"
+            echo "| NoMount | ${{ inputs.use_nomount && '✅ enabled' || '❌ disabled' }} |"
             echo "| Optimization | \`${{ inputs.optimize_level }}\` |"
+            echo "| MLGO | ${{ inputs.mlgo && '✅ enabled' || '❌ disabled' }} |"
             echo "| Droidspaces & NTSync | ${{ inputs.enable_droidspaces_ntsync && '✅ enabled' || '❌ disabled' }} |"
             echo "| Toolchain sync | ${{ inputs.mirror_toolchains && '✅ enabled' || '❌ disabled' }} |"
             echo "| Custom version | \`${{ inputs.custom_version || 'auto (-<android> KMI tag)' }}\` |"
@@ -428,7 +451,7 @@ jobs:
 
   prepare_ccache:
     name: Prepare ccache binary (download once)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Download custom ccache once
         run: |
@@ -630,6 +653,7 @@ jobs:
           ksu_type: ${{ fromJSON(needs.set-matrix.outputs.matrix)[0].ksu_type }}
           ksu_branch_or_hash: ${{ fromJSON(needs.set-matrix.outputs.matrix)[0].ksu_resolved_hash }}
           use_rekernel: ${{ inputs.use_rekernel }}
+          use_nomount: ${{ inputs.use_nomount || false }}
           # BakaSU/FinaSU：内核侧检出到官方最新上传 Manager 构建的同一提交（空=跟随 ksu_branch_or_hash）
           ksu_commit: ${{ needs.get-manager.outputs.ksuCommit }}
           # FinaSU：管理器签名证书（内核第二信任槽对齐用，空=构建时回退 Release APK 提取）
@@ -637,6 +661,7 @@ jobs:
           ksu_cert_hash: ${{ needs.get-manager.outputs.managerCertHash }}
           custom_version: ${{ inputs.custom_version }}
           optimize_level: ${{ inputs.optimize_level }}
+          mlgo: ${{ inputs.mlgo }}
           build_timestamp: ${{ inputs.build_timestamp }}
           cache_stagger: false
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -682,3 +707,4 @@ jobs:
     with:
       ksu_variant: ${{ inputs.ksu_variant }}
       build_channel: ${{ inputs.build_channel }}
+      use_nomount: ${{ inputs.use_nomount || false }}
